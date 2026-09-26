@@ -17,3 +17,14 @@ Columns: `id`, `url`, `modality` (text, multimodal, image, video, audio, 3d, oth
 and model-family names (LTX/Wan for video, FLUX/Qwen-Image for image, and so on). Uploads
 that give no clue are left as `other`. Search hits that only match on the uploader's name are
 dropped.
+
+## Model cards
+
+`fetch_cards.py` downloads each model's README (its model card) into `cards.jsonl.gz`, one
+`{"id", "status", "card"}` object per line. It stays under the Hub's anonymous limit
+(3000 requests per 5 minutes), waits out any rate limit it hits, and resumes where it left
+off if re-run. A full run takes about 1.5–2 hours. The output isn't committed (too large).
+
+```sh
+python fetch_cards.py
+```
