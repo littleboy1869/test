@@ -23,7 +23,10 @@ dropped.
 `fetch_cards.py` downloads each model's README (its model card) into `cards.jsonl.gz`, one
 `{"id", "status", "card"}` object per line. It stays under the Hub's anonymous limit
 (3000 requests per 5 minutes), waits out any rate limit it hits, and resumes where it left
-off if re-run. A full run takes about 1.5–2 hours. The output isn't committed (too large).
+off if re-run. A full run takes about 1.5–2 hours.
+
+The committed `cards.jsonl.xz` (about 10 MB; `xz -d` to unpack) is the full set as of
+2026-09-26: 24,139 models, 22,648 with a card, 1,144 with no README, 347 gated or removed.
 
 ```sh
 python fetch_cards.py
