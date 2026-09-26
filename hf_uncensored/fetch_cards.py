@@ -83,16 +83,26 @@ def main():
     args = ap.parse_args()
 
     ids = [m["id"] for m in json.loads((HERE / "models.json").read_text())]
-    done = set()
+    done, kept, truncated = set(), [], False
     if OUT.exists():
         with gzip.open(OUT, "rt") as f:
-            for line in f:
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # a line cut off by an interrupted run; it will be refetched
-                if rec["status"] != "failed":
-                    done.add(rec["id"])
+            try:
+                for line in f:
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # a line cut off by an interrupted run; refetched below
+                    if rec["status"] != "failed":
+                        done.add(rec["id"])
+                        kept.append(line if line.endswith("\n") else line + "\n")
+            except EOFError:
+                truncated = True  # the run was killed mid-write
+    if truncated:
+        # Appending to a truncated gzip stream would corrupt it, so rewrite the good records.
+        tmp = OUT.with_suffix(".tmp")
+        with gzip.open(tmp, "wt") as f:
+            f.writelines(kept)
+        tmp.replace(OUT)
     todo = [i for i in ids if i not in done][: args.limit]
     print(f"{len(done)} already saved, {len(todo)} to fetch", file=sys.stderr)
 
