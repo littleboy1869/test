@@ -7,6 +7,7 @@ submit, so submission is left to you).
     python solve.py              # run every challenge
     python solve.py sprites abc  # run only the named ones
     python solve.py --list       # list challenge names
+    python solve.py --no-delay   # skip the human-like pauses between requests
 """
 import argparse
 import base64
@@ -35,43 +36,123 @@ BASE = "https://tryscrapeme.com"
 PRACTICE = f"{BASE}/web-scraping-practice"
 # Desktop browser profiles, one picked per session like Firecrawl's browser service does
 # (it draws from the `user-agents` package, which currently yields Chrome 140/141).
-# Each profile carries the headers that browser actually sends alongside its UA, so the
-# request doesn't look like a bare script with a borrowed UA string.
-_ACCEPT = ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
-           "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
 BROWSER_PROFILES = [
     {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-        "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
-        "sec-ch-ua-platform": '"Windows"',
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "ch_ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+        "platform": '"Windows"',
     },
     {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-        "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
-        "sec-ch-ua-platform": '"macOS"',
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "ch_ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+        "platform": '"macOS"',
     },
     {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
-        "sec-ch-ua": '"Chromium";v="140", "Not=A?Brand";v="24", "Microsoft Edge";v="140"',
-        "sec-ch-ua-platform": '"Windows"',
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+        "ch_ua": '"Chromium";v="140", "Not=A?Brand";v="24", "Microsoft Edge";v="140"',
+        "platform": '"Windows"',
     },
 ]
-COMMON_HEADERS = {
-    "Accept": _ACCEPT,
-    "Accept-Language": "en-US,en;q=0.9",
-    # Chrome sends "gzip, deflate, br, zstd"; only advertise what urllib3 can decode here
-    # (br needs the brotli package), or the server may reply in an unreadable encoding.
-    "Accept-Encoding": ", ".join(ACCEPT_ENCODING.split(",")),
-    "sec-ch-ua-mobile": "?0",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-User": "?1",
-    "Sec-Fetch-Dest": "document",
-}
+ACCEPT_DOCUMENT = ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+                   "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+ACCEPT_IMAGE = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+# Chrome sends "gzip, deflate, br, zstd"; only advertise what urllib3 can decode here
+# (br needs the brotli package), or the server may reply in an unreadable encoding.
+ACCEPT_ENCODINGS = ", ".join(ACCEPT_ENCODING.split(","))
+
+# Pauses between actions, in seconds: reading a page before clicking on, and the short
+# gap before a page's own sub-requests (scripts' API calls, images) go out.
+PAUSE_NAVIGATE = (0.8, 2.5)
+PAUSE_SUBRESOURCE = (0.05, 0.3)
+
+
+class Browser(requests.Session):
+    """A requests session whose headers follow what Chrome sends for each kind of request.
+
+    kind is inferred as "navigate" for GET and "form" for POST; pass kind="fetch" for
+    script API calls, "image" for images and "iframe" for frame documents. Referer and
+    Sec-Fetch-Site come from the page currently open, and top-level loads update it.
+    """
+
+    def __init__(self, pace: bool = True):
+        super().__init__()
+        self.profile = random.choice(BROWSER_PROFILES)
+        self.page = None  # URL of the document currently open in the "tab"
+        self.pace = pace
+        self.headers.clear()  # every header is set per request, in Chrome's order
+
+    def _pause(self, span):
+        if self.pace and self.page is not None:
+            time.sleep(random.uniform(*span))
+
+    def _site(self, url):
+        if self.page is None:
+            return "none"  # typed into the address bar
+        a, b = urlsplit(self.page), urlsplit(url)
+        return "same-origin" if (a.scheme, a.netloc) == (b.scheme, b.netloc) else "cross-site"
+
+    def _referer(self, url):
+        # Chrome's default policy (strict-origin-when-cross-origin).
+        if self.page is None:
+            return None
+        if self._site(url) == "same-origin":
+            return self.page
+        p = urlsplit(self.page)
+        return f"{p.scheme}://{p.netloc}/"
+
+    def _headers(self, kind, url):
+        p = self.profile
+        site, referer = self._site(url), self._referer(url)
+        client_hints = [("sec-ch-ua", p["ch_ua"]), ("sec-ch-ua-mobile", "?0"),
+                        ("sec-ch-ua-platform", p["platform"])]
+        h = []
+        if kind in ("navigate", "form", "iframe"):
+            if kind == "form":
+                h.append(("Cache-Control", "max-age=0"))
+            h += client_hints
+            if kind == "form":
+                o = urlsplit(url)
+                h += [("Origin", f"{o.scheme}://{o.netloc}"),
+                      ("Content-Type", "application/x-www-form-urlencoded")]
+            h += [("Upgrade-Insecure-Requests", "1"), ("User-Agent", p["ua"]),
+                  ("Accept", ACCEPT_DOCUMENT), ("Sec-Fetch-Site", site),
+                  ("Sec-Fetch-Mode", "navigate")]
+            if kind != "iframe":
+                h.append(("Sec-Fetch-User", "?1"))
+            h.append(("Sec-Fetch-Dest", "iframe" if kind == "iframe" else "document"))
+            priority = "u=0, i"
+        else:
+            h += [("sec-ch-ua-platform", p["platform"]), ("User-Agent", p["ua"]),
+                  ("sec-ch-ua", p["ch_ua"]), ("sec-ch-ua-mobile", "?0")]
+            if kind == "image":
+                h += [("Accept", ACCEPT_IMAGE), ("Sec-Fetch-Site", site),
+                      ("Sec-Fetch-Mode", "no-cors"), ("Sec-Fetch-Dest", "image")]
+                priority = "i"
+            else:
+                h += [("Accept", "*/*"), ("Sec-Fetch-Site", site),
+                      ("Sec-Fetch-Mode", "cors"), ("Sec-Fetch-Dest", "empty")]
+                priority = "u=1, i"
+        if referer:
+            h.append(("Referer", referer))
+        h += [("Accept-Encoding", ACCEPT_ENCODINGS), ("Accept-Language", "en-US,en;q=0.9"),
+              ("Priority", priority)]
+        return dict(h)
+
+    def request(self, method, url, *args, kind=None, **kwargs):
+        kind = kind or ("form" if method.upper() == "POST" else "navigate")
+        self._pause(PAUSE_NAVIGATE if kind in ("navigate", "form") else PAUSE_SUBRESOURCE)
+        kwargs["headers"] = {**self._headers(kind, url), **(kwargs.get("headers") or {})}
+        response = super().request(method, url, *args, **kwargs)
+        if kind in ("navigate", "form"):
+            self.page = response.url
+        return response
+
+
+PACE = True  # set False (--no-delay) to skip the human-like pauses
+
 
 SOLVERS = {}
 
@@ -83,11 +164,8 @@ def challenge(name):
     return register
 
 
-def session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(COMMON_HEADERS)
-    s.headers.update(random.choice(BROWSER_PROFILES))
-    return s
+def session() -> Browser:
+    return Browser(pace=PACE)
 
 
 def fresh(url: str) -> str:
@@ -149,7 +227,7 @@ def images(s):
     target = "gzybck.jpg"
     for src in html(s, url).xpath("//img/@src"):
         if src.split("?")[0].endswith("/" + target):
-            return md5(s.get(urljoin(url, src)).content)
+            return md5(s.get(urljoin(url, src), kind="image").content)
     raise RuntimeError(f"{target} not found on page")
 
 
@@ -186,7 +264,7 @@ def opaque_pagination(s):
 def iframe(s):
     url = f"{PRACTICE}/beginner/iframe"
     src = html(s, url).xpath("//iframe/@src")[0]
-    prices = table_prices(html(s, urljoin(url, src)))
+    prices = table_prices(html(s, urljoin(url, src), kind="iframe"))
     return fmt(sum(prices) / len(prices))
 
 
@@ -202,7 +280,8 @@ def post(s):
 
 @challenge("ajax")
 def ajax(s):
-    rows = s.get(f"{PRACTICE}/beginner/ajax/api").json()
+    s.get(f"{PRACTICE}/beginner/ajax")
+    rows = s.get(f"{PRACTICE}/beginner/ajax/api", kind="fetch").json()
     return fmt(sum(money(str(r["price"]) for r in rows)))
 
 
@@ -269,7 +348,7 @@ def verification_code(s, attempts=40):
         root = html(s, fresh(url))
         form = root.xpath("//form")[-1]
         data = {i.get("name"): i.get("value", "") for i in form.xpath(".//input[@name]")}
-        png = s.get(urljoin(url, form.xpath(".//img/@src")[0])).content
+        png = s.get(urljoin(url, form.xpath(".//img/@src")[0]), kind="image").content
         code = captcha_ocr.solve(png)
         if not code:
             continue
@@ -347,9 +426,10 @@ def offset(s):
 def timestamp_signature(s):
     # Reverse-engineered from timestamp_signature.min.js:
     #   t = unix seconds, n = 16 random [A-Za-z0-9], s = md5(t + n)
+    s.get(f"{PRACTICE}/intermediate/timestamp-signature")
     t = str(int(time.time()))
     n = "".join(random.choices(string.ascii_letters + string.digits, k=16))
-    rows = s.get(f"{PRACTICE}/intermediate/timestamp-signature/api",
+    rows = s.get(f"{PRACTICE}/intermediate/timestamp-signature/api", kind="fetch",
                  params={"t": t, "n": n, "s": md5((t + n).encode())}).json()
     return fmt(sum(float(r["price"]) for r in rows if float(r["stars"]) > 4))
 
@@ -367,9 +447,9 @@ def anti_selenium(s):
     #      ciphertext (base64, AES-ECB, PKCS7) = body without that slice.
     api = f"{PRACTICE}/intermediate/anti-selenium"
     s.get(api)
-    r = s.get(f"{api}/data", params={"t": int(time.time() * 1000)})
+    r = s.get(f"{api}/data", params={"t": int(time.time() * 1000)}, kind="fetch")
     key = r.headers["secret-token"][:32]
-    body = s.get(f"{api}/api", params={"key": key}).text
+    body = s.get(f"{api}/api", params={"key": key}, kind="fetch").text
     rows = json.loads(aes_ecb_decrypt(body[:160] + body[192:], body[160:192].encode()))
     return fmt(sum(float(r["price"]) for r in rows))
 
@@ -378,7 +458,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("names", nargs="*", help="challenges to run (default: all)")
     ap.add_argument("--list", action="store_true", help="list challenge names")
+    ap.add_argument("--no-delay", action="store_true", help="skip the human-like pauses")
     args = ap.parse_args()
+    global PACE
+    PACE = not args.no_delay
     if args.list:
         print("\n".join(SOLVERS))
         return 0

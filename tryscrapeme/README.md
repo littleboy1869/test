@@ -18,7 +18,24 @@ pip install -r requirements.txt
 python solve.py              # all challenges
 python solve.py sprites abc  # just these
 python solve.py --list
+python solve.py --no-delay   # skip the human-like pauses
 ```
+
+## Browser-like requests
+
+`solve.py` uses a `Browser` session that sends what Chrome would for each request, not
+just a borrowed User-Agent:
+
+- one desktop profile per session (Chrome 141 on Windows or Mac, or Edge 140), with
+  matching `sec-ch-ua` client hints
+- per-request-type headers: page loads, form posts (`Origin`, `Cache-Control`), script API
+  calls (`Accept: */*`, `Sec-Fetch-Mode: cors`), images and iframes each get their own
+  `Accept`, `Sec-Fetch-*` and `Priority` values, in Chrome's order
+- `Referer` and `Sec-Fetch-Site` follow the page currently open; API challenges load their
+  page first, like a browser running the page's script
+- pauses of 0.8–2.5 s between page loads and 0.05–0.3 s before sub-requests
+
+It still speaks HTTP/1.1 with Python's TLS stack, so it isn't byte-identical to Chrome.
 
 ## How the harder ones work
 
