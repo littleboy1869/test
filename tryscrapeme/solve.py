@@ -27,15 +27,51 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from lxml import etree
 from PIL import Image, ImageOps
+from urllib3.util.request import ACCEPT_ENCODING
 
 import captcha_ocr
 
 BASE = "https://tryscrapeme.com"
 PRACTICE = f"{BASE}/web-scraping-practice"
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+# Desktop browser profiles, one picked per session like Firecrawl's browser service does
+# (it draws from the `user-agents` package, which currently yields Chrome 140/141).
+# Each profile carries the headers that browser actually sends alongside its UA, so the
+# request doesn't look like a bare script with a borrowed UA string.
+_ACCEPT = ("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+           "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+BROWSER_PROFILES = [
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+        "sec-ch-ua-platform": '"Windows"',
+    },
+    {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+        "sec-ch-ua-platform": '"macOS"',
+    },
+    {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0",
+        "sec-ch-ua": '"Chromium";v="140", "Not=A?Brand";v="24", "Microsoft Edge";v="140"',
+        "sec-ch-ua-platform": '"Windows"',
+    },
+]
+COMMON_HEADERS = {
+    "Accept": _ACCEPT,
+    "Accept-Language": "en-US,en;q=0.9",
+    # Chrome sends "gzip, deflate, br, zstd"; only advertise what urllib3 can decode here
+    # (br needs the brotli package), or the server may reply in an unreadable encoding.
+    "Accept-Encoding": ", ".join(ACCEPT_ENCODING.split(",")),
+    "sec-ch-ua-mobile": "?0",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-User": "?1",
+    "Sec-Fetch-Dest": "document",
+}
 
 SOLVERS = {}
 
@@ -49,7 +85,8 @@ def challenge(name):
 
 def session() -> requests.Session:
     s = requests.Session()
-    s.headers["User-Agent"] = UA
+    s.headers.update(COMMON_HEADERS)
+    s.headers.update(random.choice(BROWSER_PROFILES))
     return s
 
 
