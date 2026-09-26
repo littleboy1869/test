@@ -1,0 +1,7 @@
+requests
+lxml
+pillow
+pytesseract
+opencv-python-headless
+numpy
+pycryptodome
