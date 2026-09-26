@@ -33,3 +33,19 @@ python solve.py --list
 | pagination | The page links point at `/pagination`, which 404s; the same query on the challenge URL works. |
 | timestamp-signature | `s = md5(t + n)` with `t` = unix seconds and `n` = 16 random alphanumerics. |
 | anti-selenium | Replays the page's calls: the `secret-token` header gives the key, and the API body is AES-ECB with its key embedded at characters 160–192. |
+
+## Self-hosted Firecrawl (optional)
+
+The solvers don't need it, but `firecrawl-local.sh` runs self-hosted Firecrawl inside a
+Claude Code cloud session. Containers there have no internet access, so the script copies
+the prebuilt apps out of the official images and runs them (plus Redis, RabbitMQ and
+Postgres) as plain processes that go through the session's proxy.
+
+```sh
+./firecrawl-local.sh setup   # once per container
+./firecrawl-local.sh start   # API on http://localhost:3002
+firecrawl --api-url http://localhost:3002 --api-key local scrape <url>
+```
+
+It renders JavaScript pages (e.g. the AJAX challenge), but it can't do the captcha login,
+signature or decryption challenges; `solve.py` handles those.
